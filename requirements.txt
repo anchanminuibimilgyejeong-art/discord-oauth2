@@ -1,0 +1,4 @@
+flask
+discord-oauth2.py
+requests
+gunicorn
