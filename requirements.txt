@@ -1,4 +1,3 @@
-flask
-discord-oauth2.py
+Flask
 requests
 gunicorn
