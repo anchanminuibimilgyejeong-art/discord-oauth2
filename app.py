@@ -1,44 +1,36 @@
 import os
 import requests
+import logging
 from flask import Flask, redirect, request, jsonify, session
 
 app = Flask(__name__)
-# 세션 관리를 위한 Secret Key (보안을 위해 환경 변수로 관리하거나 임의 문자열 사용)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "super-secret-key-change-this")
 
-# ==========================================
-# 1. 설정 및 디스코드 OAuth2 정보
-# ==========================================
-CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "1549778071404412988")
-CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "YOUR_CLIENT_SECRET_HERE")  # 본인 클라이언트 시크릿 입력
-REDIRECT_URI = "https://discord-oauth2-7e2n.onrender.com/oauth2"  # Render 앱의 리다이렉트 URI
+# 로그 출력 설정
+logging.basicConfig(level=logging.INFO)
 
-# 2. 주소 분리 (핵심 해결책!)
-# - AUTH_URL: 브라우저가 직접 접속하는 동의 창 (공식 Discord URL 사용)
-# - API_URL: Render 서버가 토큰/유저정보 요청을 보낼 통로 (Cloudflare Worker 프록시 사용)
+CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "1549778071404412988")
+CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "YOUR_CLIENT_SECRET_HERE")
+REDIRECT_URI = "https://discord-oauth2-7e2n.onrender.com/oauth2"
+
 DISCORD_AUTH_URL = "https://discord.com/oauth2/authorize"
 DISCORD_API_URL = "https://discord-proxy.cls110623.workers.dev"
 
-# 봇/요청 차단 방지용 User-Agent
 HEADERS = {
     "User-Agent": "DiscordBot (https://discord-oauth2-7e2n.onrender.com, 1.0.0)"
 }
 
-# ==========================================
-# 3. 라우트 정의
-# ==========================================
 
 @app.route('/')
 def index():
     user = session.get('user')
     if user:
-        return f"<h1>로그인 성공!</h1><p>안녕하세요, {user.get('username')}#{user.get('discriminator')}님!</p><a href='/logout'>로그아웃</a>"
+        return f"<h1>로그인 성공!</h1><p>안녕하세요, {user.get('username')}님!</p><a href='/logout'>로그아웃</a>"
     return '<a href="/login"><button>🚀 디스코드로 로그인</button></a>'
 
 
 @app.route('/login')
 def login():
-    """사용자를 디스코드 공식 로그인/동의 페이지로 이동시킵니다."""
     discord_login_url = (
         f"{DISCORD_AUTH_URL}"
         f"?client_id={CLIENT_ID}"
@@ -46,24 +38,27 @@ def login():
         f"&response_type=code"
         f"&scope=identify%20email"
     )
+    print(f"\n[DEBUG] 로그인 요청 시도 - CLIENT_ID: {CLIENT_ID}")
     return redirect(discord_login_url)
 
 
 @app.route('/oauth2')
 def oauth2_callback():
-    """디스코드 동의 후 리다이렉트되는 콜백 백엔드 처리"""
     code = request.args.get('code')
     error = request.args.get('error')
 
     if error:
+        print(f"[DEBUG ERROR] 디스코드 인증 취소/오류: {error}")
         return f"로그인 취소 또는 오류 발생: {error}", 400
     if not code:
+        print("[DEBUG ERROR] Auth Code가 전달되지 않음")
         return "인증 코드가 없습니다.", 400
 
-    # ------------------------------------------
-    # Step 1: Access Token 발급 요청 (Proxy 경유)
-    # ------------------------------------------
     token_url = f"{DISCORD_API_URL}/oauth2/token"
+    
+    # 시크릿 키 문자열 검증용 디버그
+    masked_secret = f"{CLIENT_SECRET[:4]}***{CLIENT_SECRET[-4:]}" if len(CLIENT_SECRET) > 8 else "TOO_SHORT_OR_EMPTY"
+    
     payload = {
         'client_id': CLIENT_ID,
         'client_secret': CLIENT_SECRET,
@@ -76,55 +71,58 @@ def oauth2_callback():
         'Content-Type': 'application/x-www-form-urlencoded'
     }
 
+    # 디버그 로그 출력
+    print("\n========= [DEBUG: OAUTH2 TOKEN REQUEST] =========")
+    print(f"1. Target URL      : {token_url}")
+    print(f"2. Client ID       : {CLIENT_ID}")
+    print(f"3. Client Secret   : {masked_secret} (Length: {len(CLIENT_SECRET)})")
+    print(f"4. Redirect URI    : {REDIRECT_URI}")
+    print(f"5. Auth Code       : {code[:10]}...")
+    print("=================================================\n")
+
     try:
         token_response = requests.post(token_url, data=payload, headers=headers, timeout=10)
         
-        # 429 차단 및 기타 에러 예외 처리
+        print("\n========= [DEBUG: DISCORD RESPONSE] =========")
+        print(f"1. Status Code : {token_response.status_code}")
+        print(f"2. Response Body: {token_response.text}")
+        print("=============================================\n")
+
         if token_response.status_code != 200:
             return jsonify({
-                "error": "토큰 발급 실패",
-                "status_code": token_response.status_code,
-                "details": token_response.text
+                "debug_info": {
+                    "client_id_used": CLIENT_ID,
+                    "secret_length": len(CLIENT_SECRET),
+                    "redirect_uri_used": REDIRECT_URI,
+                },
+                "discord_error_raw": token_response.text,
+                "status_code": token_response.status_code
             }), token_response.status_code
             
         token_data = token_response.json()
         access_token = token_data.get('access_token')
 
     except requests.exceptions.RequestException as e:
+        print(f"[DEBUG EXCEPTION] Request Exception: {str(e)}")
         return f"토큰 요청 중 네트워크 오류 발생: {str(e)}", 500
 
-    # ------------------------------------------
-    # Step 2: 유저 정보 조회 요청 (Proxy 경유)
-    # ------------------------------------------
+    # 유저 정보 요청
     user_url = f"{DISCORD_API_URL}/users/@me"
-    user_headers = {
-        **HEADERS,
-        'Authorization': f"Bearer {access_token}"
-    }
+    user_headers = {**HEADERS, 'Authorization': f"Bearer {access_token}"}
 
     try:
         user_response = requests.get(user_url, headers=user_headers, timeout=10)
+        print(f"[DEBUG] /users/@me Status Code: {user_response.status_code}")
         
         if user_response.status_code != 200:
-            return jsonify({
-                "error": "유저 정보 조회 실패",
-                "status_code": user_response.status_code,
-                "details": user_response.text
-            }), user_response.status_code
+            return jsonify({"error": "유저 정보 조회 실패", "details": user_response.text}), user_response.status_code
 
         user_data = user_response.json()
-        session['user'] = user_data  # 세션에 저장
-        
+        session['user'] = user_data
         return redirect('/')
 
     except requests.exceptions.RequestException as e:
         return f"유저 정보 요청 중 네트워크 오류 발생: {str(e)}", 500
-
-
-@app.route('/logout')
-def logout():
-    session.pop('user', None)
-    return redirect('/')
 
 
 if __name__ == '__main__':
