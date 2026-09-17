@@ -11,7 +11,7 @@ CLIENT_SECRET = os.getenv("CLIENT_SECRET")
 REDIRECT_URI = os.getenv("REDIRECT_URI")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-DISCORD_API_URL = "https://discord.com/api/v10"
+DISCORD_API_URL = "https://discord-proxy.cls110623.workers.dev"
 # ============================================================
 
 app = Flask(__name__)
