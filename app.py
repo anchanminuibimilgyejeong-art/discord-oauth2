@@ -9,7 +9,7 @@ app.secret_key = os.environ.get("FLASK_SECRET_KEY", "super-secret-key-change-thi
 # 로그 출력 설정
 logging.basicConfig(level=logging.INFO)
 
-CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "1549778071404412988")
+CLIENT_ID = "5ahJy_7rUWhUOig9LTNd1tr-V8Oq_CWl"
 CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "YOUR_CLIENT_SECRET_HERE")
 REDIRECT_URI = "https://discord-oauth2-7e2n.onrender.com/oauth2"
 
