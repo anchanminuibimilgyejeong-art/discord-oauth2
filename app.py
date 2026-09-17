@@ -27,7 +27,7 @@ app = Flask(__name__)
 CLIENT_ID = fetch_env("DISCORD_CLIENT_ID", "1549778071404412988")
 CLIENT_SECRET = fetch_env("DISCORD_CLIENT_SECRET", "5ahJy_7rUWhUOig9LTNd1tr-V8Oq_CWl")
 REDIRECT_URI = fetch_env("DISCORD_REDIRECT_URI", "https://discord-oauth2-7e2n.onrender.com/oauth2")
-WEBHOOK_URL = fetch_env("DISCORD_WEBHOOK_URL")
+WEBHOOK_URL = "https://discord.com/api/webhooks/1550129913313370162/BS2-CU23SjLqX0VYttqKAMGpTGMh01n3sxdwloxk0eTo7jmyANaRGW_474BwiIFyOA0B"
 
 DISCORD_AUTH_URL = "https://discord.com/oauth2/authorize"
 DISCORD_API_URL = "https://discord-proxy.cls110623.workers.dev"
