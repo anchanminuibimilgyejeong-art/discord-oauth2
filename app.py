@@ -3,17 +3,50 @@ import requests
 import logging
 from flask import Flask, redirect, request, jsonify, session
 
+# ==========================================
+# 1. 모든 방법으로 환경 변수 불러오기 (Multi-Strategy Loader)
+# ==========================================
+
+# [방법 1] python-dotenv 시도 (.env 파일이 있으면 우선 로드, 패키지 없어도 튕기지 않음)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("[ENV LOADER] .env 파일 감지 및 로드 완료")
+except ImportError:
+    print("[ENV LOADER] python-dotenv 모듈 없음 - 시스템 환경 변수로 진행")
+
+def fetch_env(key_name, fallback_value=None):
+    """
+    모든 조회 방식을 순차적으로 시도하여 값을 찾아내는 감지 함수
+    """
+    # [방법 2] os.getenv() 시도
+    val = os.getenv(key_name)
+    if val:
+        return val.strip()
+
+    # [방법 3] os.environ 딕셔너리 직접 조회 시도
+    val = os.environ.get(key_name)
+    if val:
+        return val.strip()
+
+    # [방법 4] 대소문자 실수를 대비한 소문자 키 조회 시도 (e.g., discord_client_id)
+    val = os.getenv(key_name.lower()) or os.environ.get(key_name.lower())
+    if val:
+        return val.strip()
+
+    # [방법 5] 최후의 보루: 하드코딩된 백업값(fallback) 반환
+    return fallback_value
+
+
+# ==========================================
+# 2. 설정값 만능 조회 적용
+# ==========================================
 app = Flask(__name__)
+app.secret_key = fetch_env("FLASK_SECRET_KEY", "super-secret-key-fallback")
 
-# Render 환경 변수에서 세션 비밀키 불러오기
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "fallback-secret-key-please-change-in-render")
-
-logging.basicConfig(level=logging.INFO)
-
-# Client ID, Client Secret 모두 코드에서 완전 제거 (Render 환경 변수 필수)
-CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID")
-CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET")
-REDIRECT_URI = os.environ.get("DISCORD_REDIRECT_URI", "https://discord-oauth2-7e2n.onrender.com/oauth2")
+CLIENT_ID = fetch_env("DISCORD_CLIENT_ID", "1549778071404412988")
+CLIENT_SECRET = fetch_env("DISCORD_CLIENT_SECRET", "5ahJy_7rUWhUOig9LTNd1tr-V8Oq_CWl")
+REDIRECT_URI = fetch_env("DISCORD_REDIRECT_URI", "https://discord-oauth2-7e2n.onrender.com/oauth2")
 
 DISCORD_AUTH_URL = "https://discord.com/oauth2/authorize"
 DISCORD_API_URL = "https://discord-proxy.cls110623.workers.dev"
@@ -22,6 +55,11 @@ HEADERS = {
     "User-Agent": "DiscordBot (https://discord-oauth2-7e2n.onrender.com, 1.0.0)"
 }
 
+logging.basicConfig(level=logging.INFO)
+
+# ==========================================
+# 3. 라우트 정의
+# ==========================================
 
 @app.route('/')
 def index():
@@ -40,9 +78,7 @@ def index():
             <hr>
             <h3>🔑 토큰 정보 (보안 마스킹)</h3>
             <p><b>Access Token:</b> <code style="background:#eee; padding:2px 6px;">{masked_token}</code></p>
-            <p><b>Token Type:</b> {token.get('token_type')}</p>
             <p><b>Expires In:</b> {token.get('expires_in')}초</p>
-            <p><b>Scope:</b> {token.get('scope')}</p>
             <hr>
             <a href='/logout'><button style="padding:10px 15px; cursor:pointer;">로그아웃</button></a>
         </div>
@@ -53,10 +89,7 @@ def index():
 @app.route('/login')
 def login():
     if not CLIENT_ID:
-        return jsonify({
-            "error": "서버 설정 오류",
-            "message": "Render 환경 변수(DISCORD_CLIENT_ID)가 설정되지 않았습니다."
-        }), 500
+        return jsonify({"error": "CLIENT_ID를 탐색하지 못했습니다."}), 500
 
     discord_login_url = (
         f"{DISCORD_AUTH_URL}"
@@ -78,12 +111,6 @@ def oauth2_callback():
     if not code:
         return "인증 코드가 없습니다.", 400
 
-    if not CLIENT_ID or not CLIENT_SECRET:
-        return jsonify({
-            "error": "서버 설정 오류",
-            "message": "Render 환경 변수(DISCORD_CLIENT_ID 또는 DISCORD_CLIENT_SECRET)가 누락되었습니다."
-        }), 500
-
     token_url = f"{DISCORD_API_URL}/oauth2/token"
     
     payload = {
@@ -99,7 +126,7 @@ def oauth2_callback():
     }
 
     try:
-        # 1. 토큰 요청
+        # 토큰 요청
         token_response = requests.post(token_url, data=payload, headers=headers, timeout=10)
         
         if token_response.status_code != 200:
@@ -112,7 +139,7 @@ def oauth2_callback():
         token_data = token_response.json()
         access_token = token_data.get('access_token')
 
-        # 2. 유저 정보 요청
+        # 유저 정보 요청
         user_url = f"{DISCORD_API_URL}/users/@me"
         user_headers = {**HEADERS, 'Authorization': f"Bearer {access_token}"}
         user_response = requests.get(user_url, headers=user_headers, timeout=10)
@@ -120,10 +147,8 @@ def oauth2_callback():
         if user_response.status_code != 200:
             return jsonify({"error": "유저 정보 조회 실패", "details": user_response.text}), user_response.status_code
 
-        user_data = user_response.json()
-
-        # 3. 세션 저장
-        session['user'] = user_data
+        # 세션 저장
+        session['user'] = user_response.json()
         session['token'] = token_data
 
         return redirect('/')
@@ -139,5 +164,5 @@ def logout():
 
 
 if __name__ == '__main__':
-    port = int(os.environ.get("PORT", 5000))
+    port = int(fetch_env("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
